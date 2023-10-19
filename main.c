@@ -28,6 +28,10 @@
 
 #define IPv4_regex "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
 
+#define IPv4 0
+#define IPv6 1
+#define HOSTNAME 2
+
 /*                              1  1  1  1  1  1
   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
@@ -53,21 +57,226 @@ struct DNS_Header {
     uint16_t ARCOUNT;
 };
 
-// TODO: check rfc names
-struct DNS_Request {
-    unsigned short qtype;
-    unsigned short qclass;
+struct DNS_Question {
+    char QNAME[256]; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
+    unsigned short QTYPE;
+    unsigned short QCLASS;
 };
 
+struct DNS_Message {
+    struct DNS_Header header;
+    struct DNS_Question question;
+};
+/***
+int format(char *srv) {
+    * function figures what type of
+     * *
+    regex_t ipv4, ipv6;
+    int srv_format = HOSTNAME, res;
+
+    regcomp(&ipv4, IPv4_regex, REG_EXTENDED);
+    res = regexec(&ipv4, srv, 0, NULL, 0);
+    if (res != 0)
+        fprintf(stderr, "Compiling of regex failed\n");
+
+    if (res == 0)
+        srv_format = IPv4;
+
+    //regcomp(&ipv6, IPv6_regex, REG_EXTENDED);
+    res = regexec(&ipv6, srv, 0, NULL, 0);
+
+
+    regfree(&ipv4);
+    regfree(&ipv6);
+    return srv_format;
+}
+***/
+void fill_question(struct DNS_Question *q, char *name, int type) {
+    strcpy(q->QNAME, name);
+
+    q->QTYPE = htons(AAAA);
+    if (type == A) {
+        q->QTYPE = htons(A);
+    }
+
+    q->QCLASS = htons(IN);
+}
+
+void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
+    /* function fills information to DNS header
+     * */
+    uint16_t flags = 0b0;
+    if (rev_query) {
+        flags += 0b1 << 11;
+    }
+
+    if (rec_desired) {
+        flags += 0b1 << 8;
+    }
+
+    h->id = htons(ID);
+    h->flags = htons(flags);
+    h->QDCOUNT = htons(1);
+    h->ANCOUNT = 0;
+    h->ARCOUNT = 0;
+    h->NSCOUNT = 0;
+}
+
+unsigned long strip_name(char *name) {
+    unsigned long length = strlen(name);
+    int dot;
+
+    if(strncmp("http://www.", name, strlen("http://www.")) == 0) {
+        dot = strlen("http://www.");
+    } else if (strncmp("https://www.", name, strlen("https://www.")) == 0) {
+        dot = strlen("https://www.");
+    } else if (strncmp("www.", name, strlen("www.")) == 0) {
+        dot = strlen("www.");
+    } else {
+        if (name[length - 1] == '.'){
+            name[length - 1] = '\0';
+            length --;
+        }
+        return length;
+    }
+
+    for (int i = 0; i < length - dot; ++i) {
+        name[i] = name[i + dot];
+    }
+    name[length - dot] = '\0';
+    length = strlen(name);
+    if (name[length - 1] == '.'){
+        name[length - 1] = '\0';
+        length--;
+    }
+    return length;
+}
+
+void increment_array_size(int **array, int *size) {
+    (*size)++;
+    *array = realloc(*array, *size * sizeof(int));
+}
+
+int convert_name(char *name) {
+    /*  Converts the address given to address in DNS format
+     * */
+    int *dot_indexes_array = NULL, array_size = 0;
+    unsigned long size = strip_name(name);
+    if (size == 0)
+        return -1;
+
+    // find all '.' and save their position to an array
+    for (int i = 0; i < size; ++i) {
+        if (name[i] == '.') {
+            increment_array_size(&dot_indexes_array, &array_size);
+            if (dot_indexes_array == NULL)
+                return -2;
+
+            dot_indexes_array[array_size - 1] = i;
+        }
+    }
+    if (array_size < 1) {
+        free(dot_indexes_array);
+        return -1;
+    }
+
+    // replaces all the '.' in address with number of bytes of the following domain
+    for (int i = 0; i < array_size; ++i) {
+        int next_index = dot_indexes_array[i];
+        size_t s;
+
+        if (i == array_size - 1)
+            s = (size - next_index - 1);
+        else
+            s = (dot_indexes_array[i + 1] - next_index - 1);
+
+        name[next_index] = s;
+    }
+
+    // adds number of bytes of the first domain to the beginning of address
+    name = realloc(name, size + 1);
+    if (name == NULL) {
+        free(dot_indexes_array);
+        return -1;
+    }
+
+    for (unsigned long i = size; i > 0; --i)
+        name[i] = name[i-1];
+
+    name[0] = (size_t) dot_indexes_array[0];
+
+    free(dot_indexes_array);
+    return 0;
+}
+
+void print_buffer(unsigned char *buffer) {
+    for (int i = 0; i < sizeof(struct DNS_Message); ++i) {
+        printf("%02X ", buffer[i]);
+    }
+    printf("\n");
+}
+
+int parse_message(char *msg, bool rev_query, bool rec_desired) {
+    struct DNS_Message m;
+    memcpy(&m, msg, sizeof(struct DNS_Message));
+    if(ntohs(m.header.id) != ID)
+        return -1;
+
+//    |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+//      0   0000      0   0   0   0   000     0000
+//     15   14-11     10  9   8   7   6-4     3-0
+    uint16_t flags = ntohs(m.header.flags), check;
+    check = 0b1 << 15 & flags;
+    if (check != 0b1 << 15)
+        return -2;
+
+    // TODO: fix this
+    check = 0b1111 << 11 & flags;
+    if (check == 0b0 && !rev_query)
+        ;
+    else if(check == 0b1 << 11 && rev_query)
+        ;
+    else
+        return -2;
+
+    char print[50];
+
+    check = 0b1 << 10 & flags;
+    if (check == 0b0)
+        strcpy(print, "Authoritative: No, ");
+    else
+        strcpy(print, "Authoritative: Yes, ");
+
+    check = 0b1 << 8 & flags;
+    if (check == 0b0)
+        strcat(print, "Recursive: No, ");
+    else
+        strcat(print, "Recursive: Yes, ");
+
+    check = 0b1 << 9 & flags;
+    if (check == 0b0)
+        strcat(print, "Truncated: No");
+    else
+        strcat(print, "Truncated: Yes");
+
+    printf("\n%s\n", print);
+    return 0;
+}
 
 /// -lresolv in Makefile
 int main(int argc, char **argv) {
+    /// declaration of used variables ///
     char *server, *address;
-    int opt, type = A, port = UDP_PORT, sock, addr_info;
+    int opt, type = A, port = UDP_PORT, sock, addr_info, name_conv;//, server_format;
     bool rec_desired = false, rev_query = false, addr = false, srv = false;
     struct addrinfo hints, *result;
     struct sockaddr_in *server_addr;
+    struct DNS_Header header;
+    struct DNS_Question question;
+    struct DNS_Message message;
+    struct timeval timeout;
 
+    /// argument handling ///
     while ((opt = getopt(argc, argv, "rx6s:p:")) != -1) {
         switch (opt) {
             case 'r':
@@ -126,28 +335,30 @@ int main(int argc, char **argv) {
         }
     }
 
+    /// check for requred arguments ///
     if (!addr || !srv) {
         fprintf(stderr, "'-s server' and 'address' are required\n");
         fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    uint16_t id = ID;
-    uint16_t flags = 0b0;
-    if (rev_query)
-        flags += 0b1 << 11;
-
-    if (rec_desired)
-        flags += 0b1 << 8;
-
-    uint16_t QDCount = 1;
+    /// TODO type = A / type = AAAA recognition
     uint16_t QDType = type;
-    uint16_t QDClass = IN;
-    // TODO: change this to real stuff
-    uint8_t name[] = {'6', 'g', 'o', 'o', 'g', 'l', 'e', '3', 'c', 'o', 'm'};
 
-    // get server IP address from server name
-    /// https://man7.org/linux/man-pages/man3/getaddrinfo.3.html ///
+    fill_header(&header, rev_query, rec_desired);
+    name_conv = convert_name(address);
+    if (name_conv == -1) {
+        fprintf(stderr, "Invalid domain name\n");
+        exit(EXIT_FAILURE);
+    }else if (name_conv == -2) {
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    fill_question(&question, address, type);
+
+    /// get server IP address from server name  ///
+    // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
     hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
@@ -159,29 +370,42 @@ int main(int argc, char **argv) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(addr_info));
         exit(EXIT_FAILURE);
     }
-    ////////////////////////////////////////////////////////////////
+    /*----------------------------------------------------------------------------------*/
 
-    // create socket
+    /// create socket ///
     AF_INET;AF_INET6;AF_UNSPEC;
-    sock= socket(AF_INET, SOCK_DGRAM, 0); /// AF_INET for ipv4/AF_INET6 for ipv6/AF_UNSPEC for ipv4 or ipv6 ???
+    sock = socket(AF_INET, SOCK_DGRAM, 0); /// AF_INET for ipv4/AF_INET6 for ipv6/AF_UNSPEC for ipv4 or ipv6 ???
     if (sock < 0) {
         fprintf(stderr, "Creation of socket failed\n");
         exit(EXIT_FAILURE);
     }
 
-    // set server info
+    /// set server info ///
     server_addr = (struct sockaddr_in*)result->ai_addr;
     server_addr->sin_port = htons(port);
     server_addr->sin_family = AF_INET;
 
-    // create DNS query message
-    char message[] = "Hello, server!"; //TODO: change this to real message
+    /// set a 20 sec timeout to socket for program not to wait indefinitely for a response ///
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0){
+        fprintf(stderr, "Setting timeout to socket failed\n");
+        exit(EXIT_FAILURE);
+    }
 
-    // send socket to server
-    sendto(sock, message, strlen(message), 0,
+    /// create DNS query message ///
+    message.header = header;
+    message.question = question;
+
+    uint8_t buffer[sizeof(struct DNS_Message)];
+    memcpy(buffer, &message, sizeof(struct DNS_Message));
+    print_buffer(buffer);   //TODO: remove
+
+    /// send socket to server ///
+    sendto(sock, buffer, sizeof(buffer), 0,
            (const struct sockaddr*)server_addr, sizeof(*server_addr));
 
-    // wait for server response
+    /// wait for response from server ///
     char buf[UDP_MSG_SIZE];
     socklen_t server_addr_len = sizeof(*server_addr);
     ssize_t recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
@@ -192,7 +416,11 @@ int main(int argc, char **argv) {
     }
 
     buf[UDP_MSG_SIZE] = '\0';
-    printf("message received from server:\n%s", buf);
+    print_buffer(buf); //TODO: remove
+
+    parse_message(buf, rev_query, rec_desired);
+//    struct DNS_Message m;
+//    memcpy(&m, buf, sizeof(struct DNS_Message));
 
     /*
      * NAME
