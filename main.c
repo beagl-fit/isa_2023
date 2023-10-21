@@ -58,15 +58,16 @@ struct DNS_Header {
 };
 
 struct DNS_Question {
-    char QNAME[256]; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
-    unsigned short QTYPE;
-    unsigned short QCLASS;
+//    char *QNAME; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
+//    char QNAME[256]; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
+    uint16_t QTYPE;
+    uint16_t QCLASS;
 };
 
 struct DNS_Message {
     struct DNS_Header header;
     struct DNS_Question question;
-};
+} __attribute__((packed));
 /***
 int format(char *srv) {
     * function figures what type of
@@ -92,7 +93,14 @@ int format(char *srv) {
 }
 ***/
 void fill_question(struct DNS_Question *q, char *name, int type) {
-    strcpy(q->QNAME, name);
+//
+//    q->QNAME = (char *)malloc(strlen(name) + 1);
+//    if(q->QNAME == NULL) {
+//        fprintf(stderr, "TODO ERROR\n"); //TODO: change text
+//        exit(EXIT_FAILURE);
+//    }
+//    strcpy(q->QNAME, name);
+//    strcpy(m->question.QNAME, "\003fit\003vut\002cz\0");
 
     q->QTYPE = htons(AAAA);
     if (type == A) {
@@ -118,35 +126,35 @@ void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
     h->flags = htons(flags);
     h->QDCOUNT = htons(1);
     h->ANCOUNT = 0;
-    h->ARCOUNT = 0;
     h->NSCOUNT = 0;
+    h->ARCOUNT = 0;
 }
 
-unsigned long strip_name(char *name) {
-    unsigned long length = strlen(name);
+unsigned long strip_name(char **name) {
+    unsigned long length = strlen(*name);
     int dot;
 
-    if(strncmp("http://www.", name, strlen("http://www.")) == 0) {
+    if(strncmp("http://www.", *name, strlen("http://www.")) == 0) {
         dot = strlen("http://www.");
-    } else if (strncmp("https://www.", name, strlen("https://www.")) == 0) {
+    } else if (strncmp("https://www.", *name, strlen("https://www.")) == 0) {
         dot = strlen("https://www.");
-    } else if (strncmp("www.", name, strlen("www.")) == 0) {
+    } else if (strncmp("www.", *name, strlen("www.")) == 0) {
         dot = strlen("www.");
     } else {
-        if (name[length - 1] == '.'){
-            name[length - 1] = '\0';
+        if ((*name)[length - 1] == '.'){
+            (*name)[length - 1] = '\0';
             length --;
         }
         return length;
     }
 
     for (int i = 0; i < length - dot; ++i) {
-        name[i] = name[i + dot];
+        (*name)[i] = (*name)[i + dot];
     }
-    name[length - dot] = '\0';
-    length = strlen(name);
-    if (name[length - 1] == '.'){
-        name[length - 1] = '\0';
+    (*name)[length - dot] = '\0';
+    length = strlen(*name);
+    if ((*name)[length - 1] == '.'){
+        (*name)[length - 1] = '\0';
         length--;
     }
     return length;
@@ -157,17 +165,17 @@ void increment_array_size(int **array, int *size) {
     *array = realloc(*array, *size * sizeof(int));
 }
 
-int convert_name(char *name) {
+int convert_name(char **name) {
     /*  Converts the address given to address in DNS format
      * */
     int *dot_indexes_array = NULL, array_size = 0;
-    unsigned long size = strip_name(name);
+    unsigned long size = strip_name(*&name);
     if (size == 0)
         return -1;
 
     // find all '.' and save their position to an array
     for (int i = 0; i < size; ++i) {
-        if (name[i] == '.') {
+        if ((*name)[i] == '.') {
             increment_array_size(&dot_indexes_array, &array_size);
             if (dot_indexes_array == NULL)
                 return -2;
@@ -190,21 +198,21 @@ int convert_name(char *name) {
         else
             s = (dot_indexes_array[i + 1] - next_index - 1);
 
-        name[next_index] = s;
+        (*name)[next_index] = s;
     }
 
     // adds number of bytes of the first domain to the beginning of address
-    name = realloc(name, size + 1);
-    if (name == NULL) {
+    char *new_name = malloc(size + 2);
+    if (new_name == NULL) {
         free(dot_indexes_array);
         return -1;
     }
 
-    for (unsigned long i = size; i > 0; --i)
-        name[i] = name[i-1];
+    new_name[0] = (size_t) dot_indexes_array[0];
+    strcat(new_name, *name);
+    *name = strdup(new_name);
 
-    name[0] = (size_t) dot_indexes_array[0];
-
+    free(new_name);
     free(dot_indexes_array);
     return 0;
 }
@@ -230,16 +238,11 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
     if (check != 0b1 << 15)
         return -2;
 
-    // TODO: fix this
     check = 0b1111 << 11 & flags;
-    if (check == 0b0 && !rev_query)
-        ;
-    else if(check == 0b1 << 11 && rev_query)
-        ;
-    else
+    if (!((check == 0b0 && !rev_query) || (check == 0b1 << 11 && rev_query)))
         return -2;
 
-    char print[50];
+    char print[strlen("Authoritative: Yes, Recursive: Yes, Truncated: Yes")];
 
     check = 0b1 << 10 & flags;
     if (check == 0b0)
@@ -259,9 +262,20 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
     else
         strcat(print, "Truncated: Yes");
 
-    printf("\n%s\n", print);
-    return 0;
+//    printf("\n%s\n", print);
+    check = 0b1111 & flags;
+    return check;
 }
+
+
+
+
+
+
+
+
+
+
 
 /// -lresolv in Makefile
 int main(int argc, char **argv) {
@@ -342,11 +356,8 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    /// TODO type = A / type = AAAA recognition
-    uint16_t QDType = type;
-
     fill_header(&header, rev_query, rec_desired);
-    name_conv = convert_name(address);
+    name_conv = convert_name(&address);
     if (name_conv == -1) {
         fprintf(stderr, "Invalid domain name\n");
         exit(EXIT_FAILURE);
@@ -396,10 +407,16 @@ int main(int argc, char **argv) {
     /// create DNS query message ///
     message.header = header;
     message.question = question;
+//    message.question.QNAME = "\003fit\003vut\002cz";
 
-    uint8_t buffer[sizeof(struct DNS_Message)];
-    memcpy(buffer, &message, sizeof(struct DNS_Message));
+//    uint8_t buffer[sizeof(struct DNS_Message)];
+//    memcpy(buffer, &message, sizeof(struct DNS_Message));
+    uint8_t buffer[sizeof(struct DNS_Header) + strlen(address) + 1 + 2 * sizeof(uint16_t)];
+    memcpy(buffer, &header, sizeof(struct DNS_Header));
+    memcpy(buffer + sizeof(struct DNS_Header), address, strlen(address) + 1);
+    memcpy(buffer + sizeof(struct DNS_Header) + strlen(address) + 1, &question, sizeof(struct DNS_Question));
     print_buffer(buffer);   //TODO: remove
+
 
     /// send socket to server ///
     sendto(sock, buffer, sizeof(buffer), 0,
@@ -418,7 +435,40 @@ int main(int argc, char **argv) {
     buf[UDP_MSG_SIZE] = '\0';
     print_buffer(buf); //TODO: remove
 
-    parse_message(buf, rev_query, rec_desired);
+    int parse_result = parse_message(buf, rev_query, rec_desired);
+    switch (parse_result) {
+        case -1:
+            fprintf(stderr, "Received packet with different ID\n");
+            exit(EXIT_FAILURE);
+        case -2:
+            fprintf(stderr, "Received packet with wrong flags\n");
+            exit(EXIT_FAILURE);
+        case 1:
+            fprintf(stderr, "Format error - The name server was unable to interpret the query.\n");
+            exit(EXIT_FAILURE);
+        case 2:
+            fprintf(stderr, "Server failure - The name server was unable to process this query due to a "
+                            "problem with the name server.\n");
+            exit(EXIT_FAILURE);
+            break;
+        case 3:
+            fprintf(stderr, "Name Error - Meaningful only for responses from an authoritative nam server,"
+                            " this code signifies that the domain name referenced in the query does not exist.\n");
+            exit(EXIT_FAILURE);
+        case 4:
+            fprintf(stderr, "Not Implemented - The name server does not support "
+                            "the requested kind of query.\n");
+            exit(EXIT_FAILURE);
+        case 5:
+            fprintf(stderr, "Refused - The name server refuses to perform the specified operation for "
+                            "policy reasons.  For example, a name server may not wish to provide the information to "
+                            "the particular requester, or a name server may not wish to perform a particular operation"
+                            " (e.g., zone transfer) for particular data.\n");
+            exit(EXIT_FAILURE);
+        default:
+            break;
+    }
+
 //    struct DNS_Message m;
 //    memcpy(&m, buf, sizeof(struct DNS_Message));
 
