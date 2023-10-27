@@ -69,54 +69,6 @@ struct DNS_Question {
 //    struct DNS_Header header;
 //    struct DNS_Question question;
 //} __attribute__((packed));
-/***
-int format(char *srv) {
-    * function figures what type of
-     * *
-    regex_t ipv4, ipv6;
-    int srv_format = HOSTNAME, res;
-
-    regcomp(&ipv4, IPv4_regex, REG_EXTENDED);
-    res = regexec(&ipv4, srv, 0, NULL, 0);
-    if (res != 0)
-        fprintf(stderr, "Compiling of regex failed\n");
-
-    if (res == 0)
-        srv_format = IPv4;
-
-    //regcomp(&ipv6, IPv6_regex, REG_EXTENDED);
-    res = regexec(&ipv6, srv, 0, NULL, 0);
-
-
-    regfree(&ipv4);
-    regfree(&ipv6);
-    return srv_format;
-}
-***/
-void fill_question(struct DNS_Question *q, int type) {
-    q->QTYPE = htons(type);
-    q->QCLASS = htons(IN);
-}
-
-void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
-    /* function fills information to DNS header
-     * */
-    uint16_t flags = 0b0;
-    if (rev_query) {
-        flags += 0b1 << 11;
-    }
-
-    if (rec_desired) {
-        flags += 0b1 << 8;
-    }
-
-    h->id = htons(ID);
-    h->flags = htons(flags);
-    h->QDCOUNT = htons(1);
-    h->ANCOUNT = 0;
-    h->NSCOUNT = 0;
-    h->ARCOUNT = 0;
-}
 
 unsigned long strip_name(char **name) {
     unsigned long length = strlen(*name);
@@ -146,6 +98,62 @@ unsigned long strip_name(char **name) {
         length--;
     }
     return length;
+}
+
+int format(char *srv) {
+    /* function figures if server was given in IPv4/IPv6/hostname format
+     * returns: 0  - IPv4
+     *          1  - IPv6
+     *          2  - Hostname
+     *          -1 - Error
+     */
+    regex_t ipv4;
+    int res;
+
+    res = regcomp(&ipv4, IPv4_regex, REG_EXTENDED);
+    if (res != 0) {
+        fprintf(stderr, "Compiling of regex failed\n");
+        return -1;
+    }
+
+    res = regexec(&ipv4, srv, 0, NULL, 0);
+    regfree(&ipv4);
+    if (res == 0)
+        return IPv4;
+
+    strip_name(&srv);
+    while (*srv) {
+        if (*srv == ':')
+            return IPv6;
+        srv++;
+    }
+
+    return HOSTNAME;
+}
+
+void fill_question(struct DNS_Question *q, int type) {
+    q->QTYPE = htons(type);
+    q->QCLASS = htons(IN);
+}
+
+void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
+    /* function fills information to DNS header
+     * */
+    uint16_t flags = 0b0;
+    if (rev_query) {
+        flags += 0b1 << 11;
+    }
+
+    if (rec_desired) {
+        flags += 0b1 << 8;
+    }
+
+    h->id = htons(ID);
+    h->flags = htons(flags);
+    h->QDCOUNT = htons(1);
+    h->ANCOUNT = 0;
+    h->NSCOUNT = 0;
+    h->ARCOUNT = 0;
 }
 
 void increment_array_size(int **array, int *size) {
@@ -344,8 +352,10 @@ int main(int argc, char **argv) {
     char *server, *address, *print_ART, *saved_address;
     int opt, type = A, port = UDP_PORT, sock, addr_info, name_conv;//, server_format;
     bool rec_desired = false, rev_query = false, addr = false, srv = false;
+    ssize_t recv_size;
     struct addrinfo hints, *result;
     struct sockaddr_in *server_addr;
+    struct sockaddr_in6 *server_addr6;
     struct DNS_Header header;
     struct DNS_Question question;
     struct timeval timeout;
@@ -429,20 +439,26 @@ int main(int argc, char **argv) {
 
     fill_question(&question, type);
 
-    /// get server IP address from server name  ///
-    // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
-    hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
-    hints.ai_flags = 0;
-    hints.ai_protocol = 0;          /* Any protocol */
-
-    addr_info = getaddrinfo(server, NULL, &hints, &result);
-    if (addr_info != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(addr_info));
+    int f = format(server);
+    if (f == -1)
         exit(EXIT_FAILURE);
+
+    if (f == HOSTNAME) {
+        /// get server IP address from server name  ///
+        // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+        hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
+        hints.ai_flags = 0;
+        hints.ai_protocol = 0;          /* Any protocol */
+
+        addr_info = getaddrinfo(server, NULL, &hints, &result);
+        if (addr_info != 0) {
+            fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(addr_info));
+            exit(EXIT_FAILURE);
+        }
+        /*----------------------------------------------------------------------------------*/
     }
-    /*----------------------------------------------------------------------------------*/
 
     /// create socket ///
     AF_INET;AF_INET6;AF_UNSPEC;
@@ -453,9 +469,25 @@ int main(int argc, char **argv) {
     }
 
     /// set server info ///
-    server_addr = (struct sockaddr_in*)result->ai_addr;
-    server_addr->sin_port = htons(port);
-    server_addr->sin_family = AF_INET;
+    if (f == IPv6) {
+        if (inet_pton(AF_INET6, "2a01:430:120::4d5d:db6e", &(server_addr6->sin6_addr)) <= 0) {
+            fprintf(stderr, "Error while converting server IP address\n");
+            exit(EXIT_FAILURE);
+        }
+        server_addr6->sin6_family = AF_INET6;
+        server_addr6->sin6_port = htons(port);
+    } else {
+        if (f == HOSTNAME) {
+            server_addr = (struct sockaddr_in *) result->ai_addr;
+        } else if (f == IPv4) {
+            if (inet_pton(AF_INET, server, &server_addr->sin_addr) <= 0) {
+                fprintf(stderr, "Error while converting server IP address\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+        server_addr->sin_family = AF_INET;
+        server_addr->sin_port = htons(port);
+    }
 
     /// set a 30 sec timeout to socket for program not to wait indefinitely for a response ///
     timeout.tv_sec = 30;
@@ -472,21 +504,34 @@ int main(int argc, char **argv) {
     memcpy(buffer + sizeof(struct DNS_Header) + strlen(address) + 1, &question, sizeof(struct DNS_Question));
 
     /// send socket to server ///
-    sendto(sock, buffer, sizeof(buffer), 0,
-           (const struct sockaddr*)server_addr, sizeof(*server_addr));
+    if (f == IPv6)
+        sendto(sock, buffer, sizeof(buffer), 0,
+               (const struct sockaddr*)server_addr6, sizeof(*server_addr6));
+    else
+        sendto(sock, buffer, sizeof(buffer), 0,
+               (const struct sockaddr*)server_addr, sizeof(*server_addr));
 
     /// wait for response from server ///
     char buf[UDP_MSG_SIZE];
-    socklen_t server_addr_len = sizeof(*server_addr);
-    ssize_t recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
-                                 (struct sockaddr*)server_addr, &server_addr_len);
-    if (recv_size == -1) {
-        fprintf(stderr, "data receiving failed\n");
-        exit(EXIT_FAILURE);
+    if (f == IPv6) {
+        socklen_t server_addr_len = sizeof(*server_addr6);
+        recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
+                             (struct sockaddr*)server_addr6, &server_addr_len);
+        if (recv_size == -1) {
+            fprintf(stderr, "data receiving failed\n");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        socklen_t server_addr_len = sizeof(*server_addr);
+        recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
+                             (struct sockaddr*)server_addr, &server_addr_len);
+        if (recv_size == -1) {
+            fprintf(stderr, "data receiving failed\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
-//    printf("%zd\n", recv_size); TODO:remove this
-    buf[recv_size + 1] = '\0';
+    buf[recv_size] = '\0';
     print_buffer(buf); //TODO: remove
 
     int an_cnt;
