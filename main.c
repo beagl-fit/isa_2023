@@ -26,6 +26,9 @@
 #define PORT_MIN 0
 #define PORT_MAX 65353
 
+#define MAX_DOMAIN_LENGTH 63
+#define MAX_HOSTNAME_LENGTH 255
+
 #define IPv4_regex "^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$"
 
 #define IPv4 0
@@ -58,16 +61,14 @@ struct DNS_Header {
 };
 
 struct DNS_Question {
-//    char *QNAME; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
-//    char QNAME[256]; //[UDP_MSG_SIZE - sizeof(struct DNS_Header) - ]
     uint16_t QTYPE;
     uint16_t QCLASS;
 };
 
-struct DNS_Message {
-    struct DNS_Header header;
-    struct DNS_Question question;
-} __attribute__((packed));
+//struct DNS_Message {
+//    struct DNS_Header header;
+//    struct DNS_Question question;
+//} __attribute__((packed));
 /***
 int format(char *srv) {
     * function figures what type of
@@ -92,21 +93,8 @@ int format(char *srv) {
     return srv_format;
 }
 ***/
-void fill_question(struct DNS_Question *q, char *name, int type) {
-//
-//    q->QNAME = (char *)malloc(strlen(name) + 1);
-//    if(q->QNAME == NULL) {
-//        fprintf(stderr, "TODO ERROR\n"); //TODO: change text
-//        exit(EXIT_FAILURE);
-//    }
-//    strcpy(q->QNAME, name);
-//    strcpy(m->question.QNAME, "\003fit\003vut\002cz\0");
-
-    q->QTYPE = htons(AAAA);
-    if (type == A) {
-        q->QTYPE = htons(A);
-    }
-
+void fill_question(struct DNS_Question *q, int type) {
+    q->QTYPE = htons(type);
     q->QCLASS = htons(IN);
 }
 
@@ -170,7 +158,7 @@ int convert_name(char **name) {
      * */
     int *dot_indexes_array = NULL, array_size = 0;
     unsigned long size = strip_name(*&name);
-    if (size == 0)
+    if (size == 0 || size > MAX_HOSTNAME_LENGTH)
         return -1;
 
     // find all '.' and save their position to an array
@@ -190,6 +178,10 @@ int convert_name(char **name) {
 
     // replaces all the '.' in address with number of bytes of the following domain
     for (int i = 0; i < array_size; ++i) {
+        if (dot_indexes_array[i + 1] - dot_indexes_array[i] > MAX_DOMAIN_LENGTH) {
+            free(dot_indexes_array);
+            return -1;
+        }
         int next_index = dot_indexes_array[i];
         size_t s;
 
@@ -217,23 +209,24 @@ int convert_name(char **name) {
     return 0;
 }
 
+// TODO: remove this function
 void print_buffer(unsigned char *buffer) {
-    for (int i = 0; i < sizeof(struct DNS_Message); ++i) {
+    for (int i = 0; i < 45; ++i) {
         printf("%02X ", buffer[i]);
     }
     printf("\n");
 }
 
-int parse_message(char *msg, bool rev_query, bool rec_desired) {
-    struct DNS_Message m;
-    memcpy(&m, msg, sizeof(struct DNS_Message));
-    if(ntohs(m.header.id) != ID)
+int parse_header(char *msg, bool rev_query, char **print_ptr, int *an_cnt) {
+    struct DNS_Header h;
+    memcpy(&h, msg, sizeof(struct DNS_Header));
+    if(ntohs(h.id) != ID)
         return -1;
 
 //    |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
 //      0   0000      0   0   0   0   000     0000
 //     15   14-11     10  9   8   7   6-4     3-0
-    uint16_t flags = ntohs(m.header.flags), check;
+    uint16_t flags = ntohs(h.flags), check;
     check = 0b1 << 15 & flags;
     if (check != 0b1 << 15)
         return -2;
@@ -242,7 +235,7 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
     if (!((check == 0b0 && !rev_query) || (check == 0b1 << 11 && rev_query)))
         return -2;
 
-    char print[strlen("Authoritative: Yes, Recursive: Yes, Truncated: Yes")];
+    char print[strlen("Authoritative: Yes, Recursive: Yes, Truncated: Yes") + 1];
 
     check = 0b1 << 10 & flags;
     if (check == 0b0)
@@ -250,7 +243,7 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
     else
         strcpy(print, "Authoritative: Yes, ");
 
-    check = 0b1 << 8 & flags;
+    check = 0b1 << 7 & flags;
     if (check == 0b0)
         strcat(print, "Recursive: No, ");
     else
@@ -262,12 +255,80 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
     else
         strcat(print, "Truncated: Yes");
 
-//    printf("\n%s\n", print);
+    *an_cnt = ntohs(h.ANCOUNT);
+
+    *print_ptr = strdup(print);
     check = 0b1111 & flags;
     return check;
 }
+void print_data(char *msg, char *type) {
+    uint16_t RDLENGTH;
+    uint8_t data;
 
+    memcpy(&RDLENGTH, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ),
+            sizeof(uint16_t ));
+    RDLENGTH = ntohs(RDLENGTH);
+//    printf("\n LENGHT: %u\n", RDLENGTH);
 
+    if (strcmp(type, "A") == 0) {
+        for (uint16_t i = 1; i < RDLENGTH; i++) {
+            memcpy(&data, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ) + i + 1,
+                   sizeof(uint8_t ));
+            printf("%u.", data);
+        }
+        memcpy(&data, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ) + RDLENGTH + 1,
+               sizeof(uint8_t ));
+        printf("%u\n", data);
+
+    } else if (strcmp(type, "AAAA") == 0) {
+        printf("IPv6\n");
+    } else {    //CNAME
+        printf("CNAME\n");
+    }
+}
+
+void parse_message(char *msg, char *addr, ssize_t size, char **saved_addr) {
+    memmove(msg, msg + sizeof(struct DNS_Header), size - sizeof(struct DNS_Header) + 1);
+    struct DNS_Question q;
+    memcpy(&q, msg + (size_t )strlen(addr) + 1, sizeof(struct DNS_Question));
+    memmove(msg, msg + (size_t )strlen(addr) + 1 + 2 * sizeof(uint16_t),
+            size - sizeof(struct DNS_Header) + 1 - (size_t )strlen(addr) - 3); //TODO: check the third agr
+
+    uint16_t name;
+    int ptr;
+    memcpy(&name, msg, sizeof(uint16_t));
+    name = ntohs(name);
+    uint16_t check = 0b11 << 14 & name;
+    if (check == 0b11 << 14) {
+        ptr = name & 0b0011111111111111;
+        if (ptr == 12) {
+            struct DNS_Question q2;
+            memcpy(&q2, msg + 2 * sizeof(uint16_t), sizeof(struct DNS_Question));
+            char *type;
+            if (ntohs(q2.QTYPE) == 1)
+                type = "A";
+            else if (ntohs(q2.QTYPE) == 5)
+                type = "AAAA";
+            else if (ntohs(q2.QTYPE) == 28)
+                type = "CNAME";
+            else
+                exit(EXIT_FAILURE);
+            strip_name(&*saved_addr);
+            int32_t ttl;
+            memcpy(&ttl, msg + sizeof(uint16_t) + sizeof(struct DNS_Question), sizeof(int32_t ));
+
+            printf("%s, %s, IN, %d, ", *saved_addr, type, ntohl(ttl));
+            print_data(msg, type);
+        }
+        else
+            printf("\nptr != 12\n");
+
+    } else {
+        ;
+        ;
+        ;
+    }
+}
 
 
 
@@ -280,14 +341,13 @@ int parse_message(char *msg, bool rev_query, bool rec_desired) {
 /// -lresolv in Makefile
 int main(int argc, char **argv) {
     /// declaration of used variables ///
-    char *server, *address;
+    char *server, *address, *print_ART, *saved_address;
     int opt, type = A, port = UDP_PORT, sock, addr_info, name_conv;//, server_format;
     bool rec_desired = false, rev_query = false, addr = false, srv = false;
     struct addrinfo hints, *result;
     struct sockaddr_in *server_addr;
     struct DNS_Header header;
     struct DNS_Question question;
-    struct DNS_Message message;
     struct timeval timeout;
 
     /// argument handling ///
@@ -357,6 +417,7 @@ int main(int argc, char **argv) {
     }
 
     fill_header(&header, rev_query, rec_desired);
+    saved_address = strdup(address);
     name_conv = convert_name(&address);
     if (name_conv == -1) {
         fprintf(stderr, "Invalid domain name\n");
@@ -366,7 +427,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    fill_question(&question, address, type);
+    fill_question(&question, type);
 
     /// get server IP address from server name  ///
     // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
@@ -396,7 +457,7 @@ int main(int argc, char **argv) {
     server_addr->sin_port = htons(port);
     server_addr->sin_family = AF_INET;
 
-    /// set a 20 sec timeout to socket for program not to wait indefinitely for a response ///
+    /// set a 30 sec timeout to socket for program not to wait indefinitely for a response ///
     timeout.tv_sec = 30;
     timeout.tv_usec = 0;
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0){
@@ -405,18 +466,10 @@ int main(int argc, char **argv) {
     }
 
     /// create DNS query message ///
-    message.header = header;
-    message.question = question;
-//    message.question.QNAME = "\003fit\003vut\002cz";
-
-//    uint8_t buffer[sizeof(struct DNS_Message)];
-//    memcpy(buffer, &message, sizeof(struct DNS_Message));
     uint8_t buffer[sizeof(struct DNS_Header) + strlen(address) + 1 + 2 * sizeof(uint16_t)];
     memcpy(buffer, &header, sizeof(struct DNS_Header));
     memcpy(buffer + sizeof(struct DNS_Header), address, strlen(address) + 1);
     memcpy(buffer + sizeof(struct DNS_Header) + strlen(address) + 1, &question, sizeof(struct DNS_Question));
-    print_buffer(buffer);   //TODO: remove
-
 
     /// send socket to server ///
     sendto(sock, buffer, sizeof(buffer), 0,
@@ -432,11 +485,15 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    buf[UDP_MSG_SIZE] = '\0';
+//    printf("%zd\n", recv_size); TODO:remove this
+    buf[recv_size + 1] = '\0';
     print_buffer(buf); //TODO: remove
 
-    int parse_result = parse_message(buf, rev_query, rec_desired);
+    int an_cnt;
+    int parse_result = parse_header(buf, rev_query, &print_ART, &an_cnt);
     switch (parse_result) {
+        case 0:
+            break;
         case -1:
             fprintf(stderr, "Received packet with different ID\n");
             exit(EXIT_FAILURE);
@@ -466,19 +523,29 @@ int main(int argc, char **argv) {
                             " (e.g., zone transfer) for particular data.\n");
             exit(EXIT_FAILURE);
         default:
-            break;
+            fprintf(stderr, "Received unexpected error in DNS flags. Error code: %d\n", parse_result);
+            exit(EXIT_FAILURE);
     }
+    printf("SIZE:%zd\n\n", recv_size);
 
-//    struct DNS_Message m;
-//    memcpy(&m, buf, sizeof(struct DNS_Message));
+    printf("%s", print_ART);
+    // TODO: check real type of record from received data, not "type"
+    char *print_type;
+    if (type == A)
+        print_type = "A";
+    else
+        print_type = "AAAA";
+
+    printf("\nQuestion Section (1)\n%s, %s, IN\nAnswer Section(%d)\n", saved_address, print_type, an_cnt);
+    parse_message(buf, address, recv_size, &saved_address);
 
     /*
-     * NAME
-     * TYPE
-     * CLASS
-     * TTL
-     * RDLENGTH
-     * RDATA
+     * NAME     2
+     * TYPE     1
+     * CLASS    1
+     * TTL      2
+     * RDLENGTH 1
+     * RDATA    RDLENGTH
      *
      * TYPE - 1  : A
      *      - 5  : CNAME
@@ -489,11 +556,11 @@ int main(int argc, char **argv) {
      *
      * */
 
-//    printf("%s\n%s\n", server, address);
-
     close(sock);
     freeaddrinfo(result);
 
+    free(print_ART);
+    free(saved_address);
     free(server);
     free(address);
     return 0;
