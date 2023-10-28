@@ -470,7 +470,7 @@ int main(int argc, char **argv) {
 
     /// set server info ///
     if (f == IPv6) {
-        if (inet_pton(AF_INET6, "2a01:430:120::4d5d:db6e", &(server_addr6->sin6_addr)) <= 0) {
+        if (inet_pton(AF_INET6, server, &server_addr6->sin6_addr) <= 0) {
             fprintf(stderr, "Error while converting server IP address\n");
             exit(EXIT_FAILURE);
         }
