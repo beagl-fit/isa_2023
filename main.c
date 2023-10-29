@@ -227,7 +227,7 @@ int convert_name(char **name) {
 
 // TODO: remove this function
 void print_buffer(unsigned char *buffer) {
-    for (int i = 0; i < 45; ++i) {
+    for (int i = 0; i < 44; ++i) {
         printf("%02X ", buffer[i]);
     }
     printf("\n");
@@ -274,7 +274,9 @@ int parse_header(char *msg, bool rev_query, char **print_ptr, int *an_cnt) {
     else
         strcat(print, "Truncated: Yes");
 
-    *an_cnt = ntohs(h.ANCOUNT);
+    an_cnt[0] = ntohs(h.ANCOUNT);
+    an_cnt[1] = ntohs(h.NSCOUNT);
+    an_cnt[2] = ntohs(h.ARCOUNT);
 
     *print_ptr = strdup(print);
     check = 0b1111 & flags;
@@ -304,45 +306,47 @@ int parse_header(char *msg, bool rev_query, char **print_ptr, int *an_cnt) {
 /                                               /
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
-void print_data(char *msg, char *type, unsigned int shift) {
+void print_data(char *msg, char *type, ssize_t *size) {
     /* Function prints out the RDATA portion of the RR
      * */
     uint16_t RDLENGTH, data6;
     uint8_t data;
 
-    memcpy(&RDLENGTH, msg + shift, sizeof(uint16_t ));
+    memcpy(&RDLENGTH, msg, sizeof(uint16_t ));
     RDLENGTH = ntohs(RDLENGTH);
 
     if (strcmp(type, "A") == 0) {
         /// if data are of type A, print out the IPv4
         for (uint16_t i = 1; i < RDLENGTH; i++) {
-            memcpy(&data, msg + shift + i + 1, sizeof(uint8_t ));
+            memcpy(&data, msg + i + 1, sizeof(uint8_t ));
             printf("%u.", data);
         }
-        memcpy(&data, msg + shift + RDLENGTH + 1, sizeof(uint8_t ));
+        memcpy(&data, msg + RDLENGTH + 1, sizeof(uint8_t ));
         printf("%u\n", data);
     } else if (strcmp(type, "AAAA") == 0) {
         /// if data are of type AAAA, print out the IPv6
         for (uint16_t i = 1; i < RDLENGTH; i++) {
-            memcpy(&data6, msg + shift + i + 1, sizeof(uint16_t ));
+            memcpy(&data6, msg + i + 1, sizeof(uint16_t ));
             printf("%04X:", data6);
         }
-        memcpy(&data6, msg + shift + RDLENGTH + 1, sizeof(uint16_t ));
+        memcpy(&data6, msg + RDLENGTH + 1, sizeof(uint16_t ));
         printf("%04X\n", data6);
     } else {
         /// otherwise the data are of type CNAME, so print out the canonical name
         for (uint16_t i = 1; i < RDLENGTH; ++i) {
-            char c = msg[i];
+            char c = msg[i + 2];
             if (c < MAX_DOMAIN_LENGTH)
                 c = '.';
             printf("%c", c);
         }
         printf("\n");
     }
+    *size -= RDLENGTH * sizeof(uint8_t) + sizeof(uint16_t);
+    memmove(msg, msg + RDLENGTH * sizeof(uint8_t) + sizeof(uint16_t), *size);
 }
 
 
-void parse_RR_and_Print(char *msg, char *addr, ssize_t size, char **saved_addr, const char *whole_msg) {
+void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
     /* Function parses resource record part of DNS query message and prints out result
      * */
     uint16_t name;
@@ -351,20 +355,13 @@ void parse_RR_and_Print(char *msg, char *addr, ssize_t size, char **saved_addr, 
     int32_t ttl;
     char *type;
 
-    /// move message to the beginning of resource record
-    memmove(msg, msg + sizeof(struct DNS_Header), size - sizeof(struct DNS_Header) + 1);
-//    struct DNS_Question q;
-//    memcpy(&q, msg + (size_t )strlen(addr) + 1, sizeof(struct DNS_Question));
-    memmove(msg, msg + (size_t )strlen(addr) + 1 + 2 * sizeof(uint16_t),
-            size - sizeof(struct DNS_Header) + 1 - (size_t )strlen(addr) - 3); //TODO: check the third agr
-
     /// check if there will be a name or a pointer in name
     memcpy(&name, msg, sizeof(uint16_t));
     name = ntohs(name);
     uint16_t check = 0b11 << 14 & name;
     if (check == 0b11 << 14) {
         /// if it is a pointer, the size of name will be 2 * uint16 starting with 11 followed by pointer to name
-        memcpy(&q2, msg + 2 * sizeof(uint16_t), sizeof(struct DNS_Question));
+        memcpy(&q2, msg + sizeof(uint16_t), sizeof(struct DNS_Question));
         if (ntohs(q2.QTYPE) == 1)
             type = "A";
         else if (ntohs(q2.QTYPE) == 5)
@@ -375,18 +372,19 @@ void parse_RR_and_Print(char *msg, char *addr, ssize_t size, char **saved_addr, 
             fprintf(stderr, "Got response with an unknown QTYPE\n");
             return;
         }
-        strip_name(&*saved_addr);
         memcpy(&ttl, msg + sizeof(uint16_t) + sizeof(struct DNS_Question), sizeof(int32_t ));
 
         ptr = name & 0b0011111111111111;
         for (int i = 1; whole_msg[i + ptr] != '\0'; ++i) {
             char c = whole_msg[i + ptr];
-            if (c < MAX_DOMAIN_LENGTH)
+            if (c <= MAX_DOMAIN_LENGTH)
                 c = '.';
             printf("%c", c);
         }
         printf("., %s, IN, %d, ", type, ntohl(ttl));
-        print_data(msg, type, sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ));
+        *size -= 2 * sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t);
+        memmove(msg, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ), *size);
+        print_data(msg, type, size);
 
     } else {
         /// if it is a name, just print it out and the other parts of RR follow right after
@@ -405,16 +403,23 @@ void parse_RR_and_Print(char *msg, char *addr, ssize_t size, char **saved_addr, 
             fprintf(stderr, "Got response with an unknown QTYPE\n");
             return;
         }
+
         for (int i = 1; i < ptr; ++i) {
             char c = msg[i];
-            if (c < MAX_DOMAIN_LENGTH)
+            if (c <= MAX_DOMAIN_LENGTH)
                 c = '.';
             printf("%c", c);
         }
-        memcpy(&ttl, msg + ptr + 1 + sizeof(struct DNS_Question), sizeof(int32_t ));
+        *size -= (ptr + 1) * sizeof(uint8_t ) + sizeof(struct DNS_Question);
+        memmove(msg, msg + ptr + 1 + sizeof(struct DNS_Question), *size);
+
+        memcpy(&ttl, msg, sizeof(int32_t ));
         printf("., %s, IN, %d, ", type, ntohl(ttl));
 
-        print_data(msg, type, ptr + 1 + sizeof(struct DNS_Question) + sizeof(int32_t ));
+        *size -= sizeof(uint32_t );
+
+        memmove(msg, msg + sizeof(uint32_t), *size);
+        print_data(msg, type, size);
     }
 }
 
@@ -439,10 +444,6 @@ int main(int argc, char **argv) {
     struct DNS_Question question;
     struct timeval timeout;
     struct sockaddr_in6 *server_addr6 = malloc(sizeof(struct sockaddr_in6));
-    if (server_addr6 == NULL) {
-        fprintf(stderr, "Memory allocation for 'sockaddr_in6' failed\n");
-        exit(EXIT_FAILURE);
-    }
 
     /// argument handling ///
     while ((opt = getopt(argc, argv, "rx6s:p:")) != -1) {
@@ -507,6 +508,12 @@ int main(int argc, char **argv) {
     if (!addr || !srv) {
         fprintf(stderr, "'-s server' and 'address' are required\n");
         fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+
+    if (server_addr6 == NULL) {
+        fprintf(stderr, "Memory allocation for 'sockaddr_in6' failed\n");
         exit(EXIT_FAILURE);
     }
 
@@ -621,24 +628,12 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
     }
-
-//    buf[29] = '\x2D';
-//    char *bb = malloc(400);
-//    if(bb == NULL)
-//        exit(EXIT_FAILURE);
-//    memcpy(&bb, buf, recv_size);
-//    memcpy(&bb + recv_size, address, 12);
-////    memcpy(&buf, bb, 66);
-//    char *buf_cpy = malloc(400);
-//    memcpy(&buf_cpy, bb, 66);
-
-    buf[recv_size] = '\0';
     print_buffer(buf); //TODO: remove
     char buf_cpy[recv_size];
     memcpy(&buf_cpy, buf, recv_size);
 
-    int an_cnt;
-    int parse_result = parse_header(buf, rev_query, &print_ART, &an_cnt);
+    int an_cnt[3];
+    int parse_result = parse_header(buf, rev_query, &print_ART, an_cnt);
     switch (parse_result) {
         case 0:
             break;
@@ -683,8 +678,25 @@ int main(int argc, char **argv) {
     else
         print_type = "AAAA";
 
-    printf("\nQuestion Section (1)\n%s, %s, IN\nAnswer Section(%d)\n", saved_address, print_type, an_cnt);
-    parse_RR_and_Print(buf, address, recv_size, &saved_address, buf_cpy);
+    printf("\nQuestion Section (1)\n%s, %s, IN\nAnswer Section(%d)\n", saved_address, print_type, an_cnt[0]);
+
+    /// move message to the beginning of resource record
+    ssize_t size = recv_size;
+    size -= sizeof(struct DNS_Header) - 1;
+    memmove(buf, buf + sizeof(struct DNS_Header), size);
+    size -= strlen(address) + sizeof(struct DNS_Question);
+    memmove(buf, buf + (size_t )strlen(address) + 1 + sizeof(struct DNS_Question), size);
+
+    for (int i = 0; i < an_cnt[0]; ++i)
+        parse_RR_and_Print(buf, &size,buf_cpy);
+
+    printf("Authority Section(%d)\n", an_cnt[1]);
+    for (int i = 0; i < an_cnt[1]; ++i)
+        parse_RR_and_Print(buf, &size,buf_cpy);
+
+    printf("Additional Section(%d)\n", an_cnt[2]);
+    for (int i = 0; i < an_cnt[2]; ++i)
+        parse_RR_and_Print(buf, &size,buf_cpy);
 
     /*
      * NAME     2
