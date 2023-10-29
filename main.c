@@ -71,6 +71,9 @@ struct DNS_Question {
 //} __attribute__((packed));
 
 unsigned long strip_name(char **name) {
+    /* Function strips hostname of HTTP(S) and WWW parts as well as the . at the end.
+     * It returns length of the hostname that might be used for checks
+     * */
     unsigned long length = strlen(*name);
     int dot;
 
@@ -101,11 +104,12 @@ unsigned long strip_name(char **name) {
 }
 
 int format(char *srv) {
-    /* function figures if server was given in IPv4/IPv6/hostname format
-     * returns: 0  - IPv4
-     *          1  - IPv6
-     *          2  - Hostname
-     *          -1 - Error
+    /* Function figures if server was given in IPv4/IPv6/hostname format.
+     * Uses regex for IPv4 and tries to find ':' for IPv6
+     * returns: 0 - IPv4
+     *          1 - IPv6
+     *          2 - Hostname
+     *         -1 - Error
      */
     regex_t ipv4;
     int res;
@@ -127,11 +131,13 @@ int format(char *srv) {
             return IPv6;
         srv++;
     }
-
     return HOSTNAME;
 }
 
 void fill_question(struct DNS_Question *q, int type) {
+    /* Function fills information to struct DNS_Question, it used to have the name field as well, but that has been
+     * removed due to problems caused by differing sizes of that field
+     * */
     q->QTYPE = htons(type);
     q->QCLASS = htons(IN);
 }
@@ -157,19 +163,21 @@ void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
 }
 
 void increment_array_size(int **array, int *size) {
+    /* Helper function used by convert name, since C doesn't have any array.append function that auto enlarges the array
+     * */
     (*size)++;
     *array = realloc(*array, *size * sizeof(int));
 }
 
 int convert_name(char **name) {
-    /*  Converts the address given to address in DNS format
+    /*  Function converts the address given to the corresponding address in DNS format
      * */
     int *dot_indexes_array = NULL, array_size = 0;
     unsigned long size = strip_name(*&name);
     if (size == 0 || size > MAX_HOSTNAME_LENGTH)
         return -1;
 
-    // find all '.' and save their position to an array
+    /// find all '.' and save their position to an array
     for (int i = 0; i < size; ++i) {
         if ((*name)[i] == '.') {
             increment_array_size(&dot_indexes_array, &array_size);
@@ -184,7 +192,7 @@ int convert_name(char **name) {
         return -1;
     }
 
-    // replaces all the '.' in address with number of bytes of the following domain
+    /// replaces all the '.' in address with number of bytes of the following domain
     for (int i = 0; i < array_size; ++i) {
         if (dot_indexes_array[i + 1] - dot_indexes_array[i] > MAX_DOMAIN_LENGTH) {
             free(dot_indexes_array);
@@ -201,7 +209,7 @@ int convert_name(char **name) {
         (*name)[next_index] = s;
     }
 
-    // adds number of bytes of the first domain to the beginning of address
+    /// adds number of bytes of the first domain to the beginning of address
     char *new_name = malloc(size + 2);
     if (new_name == NULL) {
         free(dot_indexes_array);
@@ -226,6 +234,9 @@ void print_buffer(unsigned char *buffer) {
 }
 
 int parse_header(char *msg, bool rev_query, char **print_ptr, int *an_cnt) {
+    /* Function parses header of DNS query message with use of the struct DNS_HEADER.
+     * It checks ID and flags, prepares a string that will be printed later and returns ERROR code
+     * */
     struct DNS_Header h;
     memcpy(&h, msg, sizeof(struct DNS_Header));
     if(ntohs(h.id) != ID)
@@ -269,72 +280,141 @@ int parse_header(char *msg, bool rev_query, char **print_ptr, int *an_cnt) {
     check = 0b1111 & flags;
     return check;
 }
-void print_data(char *msg, char *type) {
-    uint16_t RDLENGTH;
+
+
+/*
+                              1  1  1  1  1  1
+0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                                               |
+/                                               /
+/                      NAME                     /
+|                                               |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                      TYPE                     |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                     CLASS                     |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                      TTL                      |
+|                                               |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+|                   RDLENGTH                    |
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--|
+/                     RDATA                     /
+/                                               /
++--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+*/
+void print_data(char *msg, char *type, unsigned int shift) {
+    /* Function prints out the RDATA portion of the RR
+     * */
+    uint16_t RDLENGTH, data6;
     uint8_t data;
 
-    memcpy(&RDLENGTH, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ),
-            sizeof(uint16_t ));
+    memcpy(&RDLENGTH, msg + shift, sizeof(uint16_t ));
     RDLENGTH = ntohs(RDLENGTH);
-//    printf("\n LENGHT: %u\n", RDLENGTH);
 
     if (strcmp(type, "A") == 0) {
+        /// if data are of type A, print out the IPv4
         for (uint16_t i = 1; i < RDLENGTH; i++) {
-            memcpy(&data, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ) + i + 1,
-                   sizeof(uint8_t ));
+            memcpy(&data, msg + shift + i + 1, sizeof(uint8_t ));
             printf("%u.", data);
         }
-        memcpy(&data, msg + sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ) + RDLENGTH + 1,
-               sizeof(uint8_t ));
+        memcpy(&data, msg + shift + RDLENGTH + 1, sizeof(uint8_t ));
         printf("%u\n", data);
-
     } else if (strcmp(type, "AAAA") == 0) {
-        printf("IPv6\n");
-    } else {    //CNAME
-        printf("CNAME\n");
+        /// if data are of type AAAA, print out the IPv6
+        for (uint16_t i = 1; i < RDLENGTH; i++) {
+            memcpy(&data6, msg + shift + i + 1, sizeof(uint16_t ));
+            printf("%04X:", data6);
+        }
+        memcpy(&data6, msg + shift + RDLENGTH + 1, sizeof(uint16_t ));
+        printf("%04X\n", data6);
+    } else {
+        /// otherwise the data are of type CNAME, so print out the canonical name
+        for (uint16_t i = 1; i < RDLENGTH; ++i) {
+            char c = msg[i];
+            if (c < MAX_DOMAIN_LENGTH)
+                c = '.';
+            printf("%c", c);
+        }
+        printf("\n");
     }
 }
 
-void parse_message(char *msg, char *addr, ssize_t size, char **saved_addr) {
+
+void parse_RR_and_Print(char *msg, char *addr, ssize_t size, char **saved_addr, const char *whole_msg) {
+    /* Function parses resource record part of DNS query message and prints out result
+     * */
+    uint16_t name;
+    unsigned int ptr;
+    struct DNS_Question q2;
+    int32_t ttl;
+    char *type;
+
+    /// move message to the beginning of resource record
     memmove(msg, msg + sizeof(struct DNS_Header), size - sizeof(struct DNS_Header) + 1);
-    struct DNS_Question q;
-    memcpy(&q, msg + (size_t )strlen(addr) + 1, sizeof(struct DNS_Question));
+//    struct DNS_Question q;
+//    memcpy(&q, msg + (size_t )strlen(addr) + 1, sizeof(struct DNS_Question));
     memmove(msg, msg + (size_t )strlen(addr) + 1 + 2 * sizeof(uint16_t),
             size - sizeof(struct DNS_Header) + 1 - (size_t )strlen(addr) - 3); //TODO: check the third agr
 
-    uint16_t name;
-    int ptr;
+    /// check if there will be a name or a pointer in name
     memcpy(&name, msg, sizeof(uint16_t));
     name = ntohs(name);
     uint16_t check = 0b11 << 14 & name;
     if (check == 0b11 << 14) {
-        ptr = name & 0b0011111111111111;
-        if (ptr == 12) {
-            struct DNS_Question q2;
-            memcpy(&q2, msg + 2 * sizeof(uint16_t), sizeof(struct DNS_Question));
-            char *type;
-            if (ntohs(q2.QTYPE) == 1)
-                type = "A";
-            else if (ntohs(q2.QTYPE) == 5)
-                type = "AAAA";
-            else if (ntohs(q2.QTYPE) == 28)
-                type = "CNAME";
-            else
-                exit(EXIT_FAILURE);
-            strip_name(&*saved_addr);
-            int32_t ttl;
-            memcpy(&ttl, msg + sizeof(uint16_t) + sizeof(struct DNS_Question), sizeof(int32_t ));
-
-            printf("%s, %s, IN, %d, ", *saved_addr, type, ntohl(ttl));
-            print_data(msg, type);
+        /// if it is a pointer, the size of name will be 2 * uint16 starting with 11 followed by pointer to name
+        memcpy(&q2, msg + 2 * sizeof(uint16_t), sizeof(struct DNS_Question));
+        if (ntohs(q2.QTYPE) == 1)
+            type = "A";
+        else if (ntohs(q2.QTYPE) == 5)
+            type = "AAAA";
+        else if (ntohs(q2.QTYPE) == 28)
+            type = "CNAME";
+        else {
+            fprintf(stderr, "Got response with an unknown QTYPE\n");
+            return;
         }
-        else
-            printf("\nptr != 12\n");
+        strip_name(&*saved_addr);
+        memcpy(&ttl, msg + sizeof(uint16_t) + sizeof(struct DNS_Question), sizeof(int32_t ));
+
+        ptr = name & 0b0011111111111111;
+        for (int i = 1; whole_msg[i + ptr] != '\0'; ++i) {
+            char c = whole_msg[i + ptr];
+            if (c < MAX_DOMAIN_LENGTH)
+                c = '.';
+            printf("%c", c);
+        }
+        printf("., %s, IN, %d, ", type, ntohl(ttl));
+        print_data(msg, type, sizeof(uint16_t) + sizeof(struct DNS_Question) + sizeof(int32_t ));
 
     } else {
-        ;
-        ;
-        ;
+        /// if it is a name, just print it out and the other parts of RR follow right after
+        ptr = 0;
+        while (msg[ptr] != '\0')
+            ptr++;
+
+        memcpy(&q2, msg + ptr + 1, sizeof(struct DNS_Question));
+        if (ntohs(q2.QTYPE) == 1)
+            type = "A";
+        else if (ntohs(q2.QTYPE) == 5)
+            type = "AAAA";
+        else if (ntohs(q2.QTYPE) == 28)
+            type = "CNAME";
+        else {
+            fprintf(stderr, "Got response with an unknown QTYPE\n");
+            return;
+        }
+        for (int i = 1; i < ptr; ++i) {
+            char c = msg[i];
+            if (c < MAX_DOMAIN_LENGTH)
+                c = '.';
+            printf("%c", c);
+        }
+        memcpy(&ttl, msg + ptr + 1 + sizeof(struct DNS_Question), sizeof(int32_t ));
+        printf("., %s, IN, %d, ", type, ntohl(ttl));
+
+        print_data(msg, type, ptr + 1 + sizeof(struct DNS_Question) + sizeof(int32_t ));
     }
 }
 
@@ -355,10 +435,14 @@ int main(int argc, char **argv) {
     ssize_t recv_size;
     struct addrinfo hints, *result;
     struct sockaddr_in *server_addr;
-    struct sockaddr_in6 *server_addr6;
     struct DNS_Header header;
     struct DNS_Question question;
     struct timeval timeout;
+    struct sockaddr_in6 *server_addr6 = malloc(sizeof(struct sockaddr_in6));
+    if (server_addr6 == NULL) {
+        fprintf(stderr, "Memory allocation for 'sockaddr_in6' failed\n");
+        exit(EXIT_FAILURE);
+    }
 
     /// argument handling ///
     while ((opt = getopt(argc, argv, "rx6s:p:")) != -1) {
@@ -461,11 +545,18 @@ int main(int argc, char **argv) {
     }
 
     /// create socket ///
-    AF_INET;AF_INET6;AF_UNSPEC;
-    sock = socket(AF_INET, SOCK_DGRAM, 0); /// AF_INET for ipv4/AF_INET6 for ipv6/AF_UNSPEC for ipv4 or ipv6 ???
-    if (sock < 0) {
-        fprintf(stderr, "Creation of socket failed\n");
-        exit(EXIT_FAILURE);
+    if (f == IPv6) {
+        sock = socket(AF_INET6, SOCK_DGRAM, 0); /// AF_INET for ipv4/AF_INET6 for ipv6/AF_UNSPEC for ipv4 or ipv6 ???
+        if (sock < 0) {
+            fprintf(stderr, "Creation of socket failed\n");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        sock = socket(AF_INET, SOCK_DGRAM, 0); /// AF_INET for ipv4/AF_INET6 for ipv6/AF_UNSPEC for ipv4 or ipv6 ???
+        if (sock < 0) {
+            fprintf(stderr, "Creation of socket failed\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
     /// set server info ///
@@ -531,8 +622,20 @@ int main(int argc, char **argv) {
         }
     }
 
+//    buf[29] = '\x2D';
+//    char *bb = malloc(400);
+//    if(bb == NULL)
+//        exit(EXIT_FAILURE);
+//    memcpy(&bb, buf, recv_size);
+//    memcpy(&bb + recv_size, address, 12);
+////    memcpy(&buf, bb, 66);
+//    char *buf_cpy = malloc(400);
+//    memcpy(&buf_cpy, bb, 66);
+
     buf[recv_size] = '\0';
     print_buffer(buf); //TODO: remove
+    char buf_cpy[recv_size];
+    memcpy(&buf_cpy, buf, recv_size);
 
     int an_cnt;
     int parse_result = parse_header(buf, rev_query, &print_ART, &an_cnt);
@@ -571,7 +674,6 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Received unexpected error in DNS flags. Error code: %d\n", parse_result);
             exit(EXIT_FAILURE);
     }
-    printf("SIZE:%zd\n\n", recv_size);
 
     printf("%s", print_ART);
     // TODO: check real type of record from received data, not "type"
@@ -582,7 +684,7 @@ int main(int argc, char **argv) {
         print_type = "AAAA";
 
     printf("\nQuestion Section (1)\n%s, %s, IN\nAnswer Section(%d)\n", saved_address, print_type, an_cnt);
-    parse_message(buf, address, recv_size, &saved_address);
+    parse_RR_and_Print(buf, address, recv_size, &saved_address, buf_cpy);
 
     /*
      * NAME     2
@@ -602,8 +704,10 @@ int main(int argc, char **argv) {
      * */
 
     close(sock);
-    freeaddrinfo(result);
+    if (f == HOSTNAME)
+        freeaddrinfo(result);
 
+    free(server_addr6);
     free(print_ART);
     free(saved_address);
     free(server);
