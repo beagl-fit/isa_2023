@@ -236,15 +236,18 @@ int convert_name(char **name) {
         (*name)[next_index] = s;
     }
 
-    /// adds number of bytes of the first domain to the beginning of address
+    /// creates a new string that has space for the number of bytes of the first domain
     char *new_name = malloc(size + 2);
     if (new_name == NULL) {
         free(dot_indexes_array);
         return -1;
     }
 
+    /// set first letter of string to NoB and second to \0 for strcat to function properly
     new_name[0] = (size_t) dot_indexes_array[0];
     new_name[1] = '\0';
+
+    /// append the name to new string and save it back to the first one so that it is usable in main
     strcat(new_name, *name);
     *name = strdup(new_name);
     if (*name == NULL) {
@@ -451,7 +454,7 @@ void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
     }
 }
 
-/// cleanup
+/// cleanup (called when exiting program)
 void cleanup(){
     if (s_in != NULL)
         free(s_in);
@@ -541,7 +544,7 @@ int main(int argc, char **argv) {
                     exit(EXIT_FAILURE);
                 }
                 if (p < PORT_MIN || p > PORT_MAX) {
-                    fprintf(stderr, "invalid port number\n");
+                    fprintf(stderr, "Invalid port number\n");
                     exit(EXIT_FAILURE);
                 }
                 port = (int)p;
@@ -552,7 +555,6 @@ int main(int argc, char **argv) {
                 exit(EXIT_FAILURE);
         }
     }
-
     for (int i = optind; i < argc; ++i) {
         if (addr) {
             fprintf(stderr, "got more than 1 address\n");
@@ -575,15 +577,11 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-
-    if (server_addr6 == NULL) {
-        fprintf(stderr, "Memory allocation for 'sockaddr_in6' failed\n");
-        exit(EXIT_FAILURE);
-    }
-
     fill_header(&header, rev_query, rec_desired);
 
+    /// check what type of query is asked for ///
     if (rev_query) {
+        /// if reversed query is required the given ip to DNS form
         int form = format(address);
         if (type == A && form == IPv4) {
             int ip[4], ip_size = 0;
@@ -661,7 +659,9 @@ int main(int argc, char **argv) {
         sa = saved_address;
 
         type = PTR;
+
     } else {
+        /// otherwise convert domain name to DNS format
         saved_address = strdup(address);
         if (saved_address == NULL) {
             fprintf(stderr, "Memory allocation for string duplication failed\n");
@@ -681,6 +681,7 @@ int main(int argc, char **argv) {
 
     fill_question(&question, type);
 
+    /// check if server was given as an IP or hostname ///
     int f = format(server);
     if (f == -1)
         exit(EXIT_FAILURE);
@@ -792,6 +793,7 @@ int main(int argc, char **argv) {
     char buf_cpy[recv_size];
     memcpy(&buf_cpy, buf, recv_size);
 
+    /// parse header of received message ///
     int an_cnt[3];
     int parse_result = parse_header(buf, rev_query, &print_ART, an_cnt);
     prt = print_ART;
@@ -831,6 +833,7 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
     }
 
+    /// print out requested info about question ///
     printf("%s", print_ART);
     char *print_type;
     if (type == A)
@@ -842,13 +845,14 @@ int main(int argc, char **argv) {
 
     printf("\nQuestion Section (1)\n%s, %s, IN\nAnswer Section(%d)\n", saved_address, print_type, an_cnt[0]);
 
-    /// move message to the beginning of resource record
+    /// move message to the beginning of the first resource record ///
     ssize_t size = recv_size;
     size -= sizeof(struct DNS_Header) - 1;
     memmove(buf, buf + sizeof(struct DNS_Header), size);
     size -= strlen(address) + sizeof(struct DNS_Question);
     memmove(buf, buf + (size_t )strlen(address) + 1 + sizeof(struct DNS_Question), size);
 
+    /// parse and print out all of the RRs into their respective sections
     for (int i = 0; i < an_cnt[0]; ++i)
         parse_RR_and_Print(buf, &size,buf_cpy);
 
@@ -860,14 +864,5 @@ int main(int argc, char **argv) {
     for (int i = 0; i < an_cnt[2]; ++i)
         parse_RR_and_Print(buf, &size,buf_cpy);
 
-//    close(sock);
-//    if (f == HOSTNAME)
-//        freeaddrinfo(result);
-//
-//    free(server_addr6);
-//    free(print_ART);
-//    free(saved_address);
-//    free(server);
-//    free(address);
     return 0;
 }
