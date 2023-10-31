@@ -1,26 +1,12 @@
-CC = gcc
-CFLAGS = -std=C99 -Wall -Wextra
+all: dns
 
-EXEC = main
-
-SRC = $(EXEC).c
-
-OBJ = $(SRC:.c=.o)
-
-LIBS = -lregex -lresolv
-
-all: $(EXEC)
-
-$(EXEC):$(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+dns: dns.c
+	gcc -o dns dns.c
 
 clean:
-	rm -f $(OBJ) $(EXEC)
+	rm -f dns
 
-test: $(EXEC)
-	./test
+test: dns
+	bash test.sh
 
 .PHONY: all clean

@@ -6,13 +6,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <netdb.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
 #include <sys/socket.h>
-#include <netdb.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <regex.h>
+#include <getopt.h>
+#include <netinet/in.h>
 
 /*
  * TYPE - 1  : A
@@ -111,7 +114,7 @@ unsigned long strip_name(char **name) {
         return length;
     }
 
-    for (int i = 0; i < length - dot; ++i) {
+    for (int i = 0; (size_t)i < length - dot; ++i) {
         (*name)[i] = (*name)[i + dot];
     }
     (*name)[length - dot] = '\0';
@@ -205,7 +208,7 @@ int convert_name(char **name) {
         return -1;
 
     /// find all '.' and save their position to an array
-    for (int i = 0; i < size; ++i) {
+    for (int i = 0; (size_t)i < size; ++i) {
         if ((*name)[i] == '.') {
             increment_array_size(&dot_indexes_array, &array_size);
             if (dot_indexes_array == NULL)
@@ -435,7 +438,7 @@ void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
             return;
         }
 
-        for (int i = 1; i < ptr; ++i) {
+        for (unsigned int i = 1; i < ptr; ++i) {
             char c = msg[i];
             if (c <= MAX_DOMAIN_LENGTH)
                 c = '.';
@@ -454,8 +457,29 @@ void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
     }
 }
 
-/// cleanup (called when exiting program)
+
+void check_length(char *hostname) {
+    size_t dom_start = 0, dom_end = 0;
+    if (strlen(hostname) > MAX_HOSTNAME_LENGTH) {
+        fprintf(stderr, "Hostname is too long\n");
+        exit(EXIT_FAILURE);
+    }
+    for (size_t i = 0; i < strlen(hostname); ++i) {
+        if (hostname[i] == '.') {
+            dom_end = i;
+            if (dom_end - dom_start - 1 > MAX_DOMAIN_LENGTH)  {
+                fprintf(stderr, "Domain in server hostname too long\n");
+                exit(EXIT_FAILURE);
+            }
+            dom_start = dom_end;
+        }
+    }
+}
+
+
 void cleanup(){
+    /* cleanup function (called when exiting program)
+     * */
     if (s_in != NULL)
         free(s_in);
 
@@ -486,14 +510,13 @@ void cleanup(){
 
 
 
-
-/// -lresolv in Makefile
 int main(int argc, char **argv) {
     char *server, *address, *print_ART, *saved_address;
     int opt, type = A, port = UDP_PORT, sock = -1, addr_info, name_conv;
     bool rec_desired = false, rev_query = false, addr = false, srv = false;
     ssize_t recv_size;
-    struct addrinfo hints, *result;
+    struct addrinfo hints;
+    struct addrinfo *result;
     struct DNS_Header header;
     struct DNS_Question question;
     struct timeval timeout;
@@ -526,6 +549,12 @@ int main(int argc, char **argv) {
                 break;
 
             case 's':
+                if (srv) {
+                    fprintf(stderr, "Got more than 1 server\n");
+                    fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+
                 srv = true;
                 server = strdup(optarg);
                 if (server == NULL) {
@@ -545,6 +574,7 @@ int main(int argc, char **argv) {
                 }
                 if (p < PORT_MIN || p > PORT_MAX) {
                     fprintf(stderr, "Invalid port number\n");
+                    fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
                     exit(EXIT_FAILURE);
                 }
                 port = (int)p;
@@ -555,19 +585,20 @@ int main(int argc, char **argv) {
                 exit(EXIT_FAILURE);
         }
     }
-    for (int i = optind; i < argc; ++i) {
-        if (addr) {
-            fprintf(stderr, "got more than 1 address\n");
-            fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
-            exit(EXIT_FAILURE);
-        }
+
+    if (optind < argc) {
         addr = true;
-        address = strdup(argv[i]);
-        if (server == NULL) {
+        address = strdup(argv[optind]);
+        if (address == NULL) {
             fprintf(stderr, "Memory allocation for 'address' failed\n");
             exit(EXIT_FAILURE);
         }
         a = address;
+    }
+    if (optind + 1 < argc) {
+        fprintf(stderr, "Got more than 1 address\n");
+        fprintf(stderr, "Usage: %s [-r] [-x] [-6] -s server [-p port] address\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
 
     /// check for requred arguments ///
@@ -583,7 +614,7 @@ int main(int argc, char **argv) {
     if (rev_query) {
         /// if reversed query is required the given ip to DNS form
         int form = format(address);
-        if (type == A && form == IPv4) {
+        if (form == IPv4) {
             int ip[4], ip_size = 0;
             for (int i = 0; i < 4; ++i) {
                 int dot = 0;
@@ -601,7 +632,7 @@ int main(int argc, char **argv) {
                 exit(EXIT_FAILURE);
             }
             sprintf(address, "%d.%d.%d.%d\x0Cin-addr.arpa", ip[3], ip[2], ip[1], ip[0]);
-        } else if (type == AAAA && form == IPv6) {
+        } else if (form == IPv6) {
             address = realloc(address, (strlen(address) + strlen(".in6.arpa")) * sizeof(char));
             if (address == NULL) {
                 fprintf(stderr, "Reallocation of space for 'address' failed\n");
@@ -609,7 +640,7 @@ int main(int argc, char **argv) {
             }
 
             int column[7], position = 0, col_pos = 0;
-            while(position < strlen(address)) {
+            while((size_t)position < strlen(address)) {
                 if (address[position] == ':' && col_pos < 7) {
                     column[col_pos] = position;
                     col_pos++;
@@ -629,7 +660,7 @@ int main(int argc, char **argv) {
             while (strtok_part != NULL) {
                 unsigned long patr_length = strlen(strtok_part);
                 char part[] = {'\0', '\0', '\0', '\0', '\0'};
-                for (int i = 0; i < patr_length; ++i) {
+                for (size_t i = 0; i < patr_length; ++i) {
                     part[i] = strtok_part[patr_length - i - 1];
                 }
 
@@ -647,7 +678,7 @@ int main(int argc, char **argv) {
             }
             sprintf(address, "%s\x08in6.arpa", DNS_form_IPv6);
         } else {
-            fprintf(stderr, "Wrong format of address for the requested type of query\n");
+            fprintf(stderr, "Wrong format of address for the reversed query\n");
             exit(EXIT_FAILURE);
         }
 
@@ -662,6 +693,7 @@ int main(int argc, char **argv) {
 
     } else {
         /// otherwise convert domain name to DNS format
+        check_length(address);
         saved_address = strdup(address);
         if (saved_address == NULL) {
             fprintf(stderr, "Memory allocation for string duplication failed\n");
@@ -687,6 +719,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
 
     if (f == HOSTNAME) {
+        check_length(server);
         /// get server IP address from server name  ///
         // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
         memset(&hints, 0, sizeof(hints));
