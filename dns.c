@@ -421,7 +421,7 @@ void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
         print_data(msg, type, size);
 
     } else {
-        /// if it is a name, just print it out and the other parts of RR follow right after
+        /// if it is a name, just print it out (unless the type is wrong) and the other parts of RR follow right after
         ptr = 0;
         while (msg[ptr] != '\0')
             ptr++;
@@ -459,6 +459,8 @@ void parse_RR_and_Print(char *msg, ssize_t *size, const char *whole_msg) {
 
 
 void check_length(char *hostname) {
+    /* Function checks if the length of hostname and number of domains are ok
+     * */
     size_t dom_start = 0, dom_end = 0;
     if (strlen(hostname) > MAX_HOSTNAME_LENGTH) {
         fprintf(stderr, "Hostname is too long\n");
@@ -508,7 +510,11 @@ void cleanup(){
         free(a2);
 }
 
-
+/******************************************/
+/******************************************/
+/*********  MAIN STARTS HERE  *************/
+/******************************************/
+/******************************************/
 
 int main(int argc, char **argv) {
     char *server, *address, *print_ART, *saved_address;
@@ -724,7 +730,7 @@ int main(int argc, char **argv) {
     if (f == HOSTNAME) {
         check_length(server);
         /// get server IP address from server name  ///
-        // https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
+        // from: https://man7.org/linux/man-pages/man3/getaddrinfo.3.html
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
         hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
@@ -778,6 +784,7 @@ int main(int argc, char **argv) {
     }
 
     /// set a 30 sec timeout to socket for program not to wait indefinitely for a response ///
+    // from: https://stackoverflow.com/questions/4181784/how-to-set-socket-timeout-in-c-when-making-multiple-connections
     timeout.tv_sec = 30;
     timeout.tv_usec = 0;
     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0){
@@ -813,18 +820,14 @@ int main(int argc, char **argv) {
         socklen_t server_addr_len = sizeof(*server_addr6);
         recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
                              (struct sockaddr*)server_addr6, &server_addr_len);
-        if (recv_size == -1) {
-            fprintf(stderr, "data receiving failed\n");
-            exit(EXIT_FAILURE);
-        }
     } else {
         socklen_t server_addr_len = sizeof(*server_addr);
         recv_size = recvfrom(sock, buf, UDP_MSG_SIZE - 1, 0,
                              (struct sockaddr*)server_addr, &server_addr_len);
-        if (recv_size == -1) {
-            fprintf(stderr, "data receiving failed\n");
-            exit(EXIT_FAILURE);
-        }
+    }
+    if (recv_size == -1) {
+        fprintf(stderr, "data receiving failed\n");
+        exit(EXIT_FAILURE);
     }
     char buf_cpy[recv_size];
     memcpy(&buf_cpy, buf, recv_size);
@@ -833,6 +836,7 @@ int main(int argc, char **argv) {
     int an_cnt[3];
     int parse_result = parse_header(buf, rev_query, &print_ART, an_cnt);
     prt = print_ART;
+    // Error definitions directly from RFC 1035
     switch (parse_result) {
         case 0:
             break;

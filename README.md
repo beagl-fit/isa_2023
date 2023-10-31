@@ -11,6 +11,7 @@ and knows how to interpret **A**, **AAAA** and **CNAME** types of resource recor
 * Makefile
 * README.md
 * manual.pdf
+* test.sh
 
 ### Usage:
 **./dns [-r] [-x] [-6] -s server [-p port] address**
@@ -23,6 +24,9 @@ and knows how to interpret **A**, **AAAA** and **CNAME** types of resource recor
 * **-s server** : DNS server where the query will be sent (IP or hostname)
 * **-s port** : port of DNS server where the query will be sent (default _53_)
 * **address** : queried name or IP (_-x_)
+
+program doesn't support the -h or --help arguments, however, the program does print out the short usage any time it 
+is run with wrong or insufficient arguments 
 
 ### Make
 used standard : gnu99
