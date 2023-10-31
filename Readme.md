@@ -1,6 +1,16 @@
 # ISA 2023 - DNS resolver
+David Novak (xnovak2r)
+
+30th October 2023
+
 DNS resolver that can send **A**, **AAAA** or **PTR** queries to a server 
 and knows how to interpret **A**, **AAAA** and **CNAME** types of resource records.
+
+### Project files
+* dns.c
+* Makefile
+* README.md
+* manual.pdf
 
 ### Usage:
 **./dns [-r] [-x] [-6] -s server [-p port] address**
@@ -28,7 +38,7 @@ _netdb.h_ library is used, therefore _-lresolv_ was used expected to be required
 after its inclusion make failed on **Eva**
 
 ### Testing
-Testing done on Fedora 37 and Merlin + Eva school servers.
+Testing done on **Fedora 37** and both **Merlin** and **Eva** school servers.
 * **Valgrind** : didn't find any memory leaks
 * **Manual tests** : dns can send and interpret required types of queries 
 * **Automated tests** : (_test.sh_) **all** tests passed on Fedora, test **10** fails on Eva, tests **4** and **6** 
