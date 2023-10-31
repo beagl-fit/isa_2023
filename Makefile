@@ -1,7 +1,7 @@
 all: dns
 
 dns: dns.c
-	gcc -o dns dns.c
+	gcc -std=gnu99 -Wall -Wextra -o dns dns.c
 
 clean:
 	rm -f dns

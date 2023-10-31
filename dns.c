@@ -565,6 +565,9 @@ int main(int argc, char **argv) {
                 break;
 
             case 'p':
+                if (1 == 1) {
+                    ;
+                }
                 char *end;
                 long p = strtol(optarg, &end, 10);
                 if (*end != '\0') {
@@ -729,11 +732,11 @@ int main(int argc, char **argv) {
         hints.ai_protocol = 0;          /* Any protocol */
 
         addr_info = getaddrinfo(server, NULL, &hints, &result);
-        r = result;
         if (addr_info != 0) {
             fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(addr_info));
             exit(EXIT_FAILURE);
         }
+        r = result;
         /*----------------------------------------------------------------------------------*/
     }
 
