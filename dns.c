@@ -48,6 +48,7 @@
 #define IPv6 1
 #define HOSTNAME 2
 
+// regex inspired by: https://stackoverflow.com/questions/7753976/regular-expression-for-numbers-without-leading-zeros
 #define IPv4_REGEX_PATTERN "^(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})\\.(0|[1-9][0-9]{0,2})$"
 
 ///global variables for cleanup function
@@ -73,6 +74,10 @@ struct addrinfo *r = NULL;
 |                    ARCOUNT                    |
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
  */
+
+// These structures were created based on the RFC, that said using the C structures was inspired by things I
+// read on the internet. (Quick google search later) Lets say that it might be for example
+//      from: https://stackoverflow.com/questions/13439361/c-dns-query-to-structure
 struct DNS_Header {
     uint16_t id;
     uint16_t flags;
@@ -86,12 +91,6 @@ struct DNS_Question {
     uint16_t QTYPE;
     uint16_t QCLASS;
 };
-
-//struct DNS_Message {
-//    struct DNS_Header header;
-//    struct DNS_Question question;
-//} __attribute__((packed));
-
 
 unsigned long strip_name(char **name) {
     /* Function strips hostname of HTTP(S) and WWW parts as well as the . at the end.
@@ -192,42 +191,26 @@ void fill_header(struct DNS_Header *h, bool rev_query, bool rec_desired) {
 }
 
 
-void increment_array_size(int **array, int *size) {
-    /* Helper function used by convert name, since C doesn't have any array.append function that auto enlarges the array
-     * */
-    (*size)++;
-    *array = realloc(*array, *size * sizeof(int));
-}
-
 int convert_name(char **name) {
     /*  Function converts the address given by user to the corresponding address in DNS format
      * */
-    int *dot_indexes_array = NULL, array_size = 0;
+    int dot_indexes_array[MAX_HOSTNAME_LENGTH], array_size = 0;
     unsigned long size = strip_name(*&name);
     if (size == 0 || size > MAX_HOSTNAME_LENGTH)
         return -1;
 
     /// find all '.' and save their position to an array
-    for (int i = 0; (size_t)i < size; ++i) {
+    for (int i = 0; (size_t)i < size; ++i)
         if ((*name)[i] == '.') {
-            increment_array_size(&dot_indexes_array, &array_size);
-            if (dot_indexes_array == NULL)
-                return -2;
-
-            dot_indexes_array[array_size - 1] = i;
+            dot_indexes_array[array_size] = i;
+            array_size++;
         }
-    }
-    if (array_size < 1) {
-        free(dot_indexes_array);
-        return -1;
-    }
 
     /// replaces all the '.' in address with number of bytes of the following domain
     for (int i = 0; i < array_size; ++i) {
-        if (i + 1 < array_size && dot_indexes_array[i + 1] - dot_indexes_array[i] > MAX_DOMAIN_LENGTH) {
-            free(dot_indexes_array);
+        if (i + 1 < array_size && dot_indexes_array[i + 1] - dot_indexes_array[i] > MAX_DOMAIN_LENGTH)
             return -1;
-        }
+
         int next_index = dot_indexes_array[i];
         size_t s;
 
@@ -242,19 +225,17 @@ int convert_name(char **name) {
     /// creates a new string that has space for the number of bytes of the first domain
     char *new_name = malloc(size + 2);
     if (new_name == NULL) {
-        free(dot_indexes_array);
         return -1;
     }
 
     /// set first letter of string to NoB and second to \0 for strcat to function properly
-    new_name[0] = (size_t) dot_indexes_array[0];
+    new_name[0] = dot_indexes_array[0];
     new_name[1] = '\0';
 
     /// append the name to new string and save it back to the first one so that it is usable in main
     strcat(new_name, *name);
     *name = strdup(new_name);
     if (*name == NULL) {
-        free(dot_indexes_array);
         free(new_name);
         fprintf(stderr, "Memory allocation failed\n");
         return -1;
@@ -262,7 +243,6 @@ int convert_name(char **name) {
     a2 = *name;
 
     free(new_name);
-    free(dot_indexes_array);
     return 0;
 }
 
@@ -470,7 +450,7 @@ void check_length(char *hostname) {
         if (hostname[i] == '.') {
             dom_end = i;
             if (dom_end - dom_start - 1 > MAX_DOMAIN_LENGTH)  {
-                fprintf(stderr, "Domain in server hostname too long\n");
+                fprintf(stderr, "Domain in hostname is too long\n");
                 exit(EXIT_FAILURE);
             }
             dom_start = dom_end;
@@ -509,6 +489,8 @@ void cleanup(){
     if (a2 != NULL)
         free(a2);
 }
+
+
 
 /******************************************/
 /******************************************/
@@ -631,10 +613,12 @@ int main(int argc, char **argv) {
                     dot++;
                 char ip_str[] = {'\0', '\0','\0','\0'};
                 strncpy(ip_str, address + ip_size, dot);
+                /// using atoi since I know that IPv4 doesn't include anything else than numbers
                 ip[i] = atoi(ip_str);
                 ip_size += dot + 1;
             }
 
+            /// increase size of address to allow printing reversed IP followed by the DNS .in-addr.arpa into it
             address = realloc(address, (strlen(address) + strlen(".in-addr.arpa")) * sizeof(char));
             if (address == NULL) {
                 fprintf(stderr, "Reallocation of space for 'address' failed\n");
@@ -648,13 +632,14 @@ int main(int argc, char **argv) {
                 exit(EXIT_FAILURE);
             }
 
+            /// find positions of all ':', because while using strtok the :: in short form of IPv6 would get lost
             int column[7], position = 0, col_pos = 0;
             while((size_t)position < strlen(address)) {
                 if (address[position] == ':' && col_pos < 7) {
                     column[col_pos] = position;
                     col_pos++;
                 } else if (col_pos == 7) {
-                    fprintf(stderr, "Invalid for of IPv6 'address'\n");
+                    fprintf(stderr, "Invalid form of IPv6 'address'\n");
                     exit(EXIT_FAILURE);
                 }
                 position++;
@@ -665,21 +650,26 @@ int main(int argc, char **argv) {
 
             position = 0;
 
+            /// take part of address until ':'
             strtok_part = strtok(address, ":");
             while (strtok_part != NULL) {
+                /// define long enough string that it can contain reversed IPv6 octet and ending '\0' character
                 unsigned long patr_length = strlen(strtok_part);
                 char part[] = {'\0', '\0', '\0', '\0', '\0'};
                 for (size_t i = 0; i < patr_length; ++i) {
                     part[i] = strtok_part[patr_length - i - 1];
                 }
 
+                /// append the reversed octet and take the next part of IP address
                 strcat(DNS_form_IPv6, part);
                 strtok_part = strtok(NULL, ":");
 
+                /// if it is not the last octet, append '.'
                 if (position < col_pos) {
                     strcat(DNS_form_IPv6, ".");
                 }
                 position++;
+                /// if there are suppose to be two ':', append another '.'
                 if (column[position] - column[position - 1] == 1 && position < col_pos) {
                     strcat(DNS_form_IPv6, ".");
                     position++;
@@ -691,6 +681,7 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
 
+        /// save address so that it doesn't have to get re-parsed from DNS message
         saved_address = strdup(address);
         if (saved_address == NULL) {
             fprintf(stderr, "Memory allocation for string duplication failed\n");
@@ -746,6 +737,7 @@ int main(int argc, char **argv) {
         /*----------------------------------------------------------------------------------*/
     }
 
+    /// standard socket communication for both IPv4 and IPv6 variants ///
     /// create socket ///
     if (f == IPv6) {
         sock = socket(AF_INET6, SOCK_DGRAM, 0);
